@@ -28,7 +28,7 @@ calculate_tri_cci_customized(
 )
 }
 \arguments{
-\item{Input}{A matrix or data frame containing gene expression data.}
+\item{Input}{A matrix containing gene expression data.(Recommend normalized data)}
 
 \item{Coordinate}{A data frame containing the spatial coordinates of spots, with columns "x" and "y".}
 

@@ -24,42 +24,50 @@ Calculate_Combined_RL_weight(
 )
 }
 \arguments{
-\item{Input}{Normalized expression data matrix}
+\item{Input}{A matrix containing gene expression data. (Recommend scRNA_mean_expression)}
 
-\item{Pro_loc_db}{A database of protein location.
-Default is organized Uniprot database which contains a column called 'father_location' which contains three param 'Membrane', 'Intracellular' and 'Nuluar'.
-If you want to provide yourself database, it should contain a 'father_location' column and set param.}
+\item{cell_ids}{The col.names selected to be calculate. If NULL, it will be selected all columns.}
 
-\item{lr_db}{A database of ligand-receptor.
+\item{PPI_db}{A database of protein-protein interaction.
+If NULL, it will be inferred from the data which contains a column called 'functional' which means stimulation, inhibition or unknown function by 1,-1,0.
+If you want to provide yourself database, it should contain a 'functional' column and set the parameter 1.}
+
+\item{Pro_loc_db}{A database of protein location. If NULL, it will be inferred from the data.
+Default is organized Uniprot database which contains a column called 'location' which contains param 'Membrane', 'Intracellular' and 'Nuluar'.
+If you want to provide yourself database, it should contain a 'location' column and set param.}
+
+\item{lr_db}{A database of ligand-receptor. If NULL, it will be inferred from the data.
 Default is the lr_db database from 'Spatalk' which contains two columns called 'ligand' and 'receptor'}
 
 \item{f_edge}{A function to calculate score of each edge, default is Hill function.}
 
+\item{Kn}{The parameter of Hill function. Default is 2.}
+
 \item{cutoff1}{A quantile to select the probility of R-L pairs over cutoff. Default is 0.5.}
 
-\item{max_steps}{find_simple_path max steps in each R-L pairs}
+\item{cutoff2}{A quantile to build a subgraph containing genes over cutoff. Default is 0.9.}
 
-\item{max_num}{number of paths to calculate path scores}
+\item{max_steps}{The max steps to be find in each R-L signal networks. Default is 5.}
 
-\item{Anno}{If mode is 'CellType', you need to provide the annotation of cells/spots}
+\item{max_num}{The number of paths to be selected to calculate path scores. Default is 20.}
 
-\item{PPI_database}{A database of protein-protein interaction.
-Default is omnipath ppi database which contains a column called 'functional' which means stimulation, inhibition or unknown function by 1,-1,0.
-If you want to provide yourself database, it should contain a 'functional' column and set the parameter 1.}
+\item{circuit_scale_factor}{Adjustment of scaling factor for circuit score. Default is 0.1.}
 
-\item{expression_cutoff}{A quantile to build a subgraph containing genes over cutoff. Default is 0.9.}
+\item{adjust_alpha}{A logical parameter that determines whether to adjust alpha. Default is TRUE.}
 
-\item{alpha}{Path score and circuit score coefficients}
+\item{target_ratio}{The goal of alpha adjustment. Default is 0.5.}
+
+\item{parallel}{A logical parameter that determines whether to do parallel. Default is TRUE.}
+
+\item{n_core}{The number of cores used for parallel computing. If NULL, it will be detectCores() - 2.}
 }
 \value{
-A dataframe of Receptor-Ligand signal weights of each cell or celltypes
+A dataframe of Receptor-Ligand signal weights of each cell_id
 }
 \description{
 Calculate combined intracelluar Receptor-Liagnd siganal weight
 }
 \examples{
-utils::data("test_exp_data", package = "stMCCC")
-utils::data("test_anno", package = "stMCCC")
-results = Calculate_Combined_RL_weight(test_exp_data[,1,drop = F], 'SingleCell')
-results = Calculate_Combined_RL_weight(test_exp_data, test_anno$Label, 'CellType')
+utils::data("test_scRNA_mean_expression", package = "stMCCC")
+results = Calculate_Combined_RL_weight(test_scRNA_mean_expression)
 }

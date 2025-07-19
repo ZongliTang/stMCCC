@@ -1,18 +1,22 @@
 #' Validate input data for calculate_all_lrlr function.
 #'
-#' @param Input Normalized expression data matrix.
+#' @param Input A matrix or data frame containing gene expression data(Recommend normalized data).
 #' @param Coordinate Coordinate matrix.
-#' @param st_type Spatial transcriptome data type ('low' or 'high').
-#' @param deconvolution_result Deconvolution result matrix.
-#' @param scRNA_mean_expression Mean expression matrix from scRNA-seq.
+#' @param st_type A character string indicating the type of spatial transcriptomics data, either "low" or "high". Default is "low".
+#' @param deconvolution_result A matrix or data frame containing deconvolution results. Required if st_type is "low".
+#' @param scRNA_mean_expression A matrix or data frame containing single-cell RNA-seq mean expression data. Required if st_type is "low".
+#' @param lr_db A data frame containing ligand-receptor pairs.
 #' @return TRUE if all inputs are valid, otherwise stop with an error message.
 #' @export
-validate_inputs <- function(Input, Coordinate, st_type, deconvolution_result = NULL, scRNA_mean_expression = NULL) {
+validate_inputs <- function(Input, Coordinate, st_type, deconvolution_result = NULL, scRNA_mean_expression = NULL, lr_db = NULL) {
   if (!is.matrix(Input)) {
     stop("Input must be a matrix.")
   }
   if (!is.matrix(Coordinate)) {
     stop("Coordinate must be a matrix.")
+  }
+  if (!identical(colnames(Input), rownames(Coordinate))) {
+    stop("The col.names of Input matrix must be identical to the row.names of Coordinate matrix.")
   }
   if (!(st_type %in% c('low', 'high'))) {
     stop("st_type must be either 'low' or 'high'.")
@@ -24,9 +28,22 @@ validate_inputs <- function(Input, Coordinate, st_type, deconvolution_result = N
     if (is.null(scRNA_mean_expression) || !is.matrix(scRNA_mean_expression)) {
       stop("For low resolution data, scRNA_mean_expression must be a matrix.")
     }
+    if (!identical(rownames(deconvolution_result), colnames(Input))) {
+      stop("The col.names of Input matrix must be identical to the row.names of deconvolution matrix.")
+    }
+    if (!identical(colnames(scRNA_mean_expression), colnames(deconvolution_result))) {
+      stop("The col.names of deconvolution matrix must be identical to the col.names of scRNA mean expression matrix.")
+    }
+  }
+  if(!is.null(lr_db)){
+    if(!all(c('ligand', 'receptor') %in% colnames(lr_db))){
+      stop("The lrpair database must contain 'ligand' and 'receptor' columns.")
+    }
   }
   return(TRUE)
 }
+
+
 
 #' Selected cell types in each spot.
 #'
@@ -119,477 +136,36 @@ Get_reconstruct_ST_expression_ct_list = function(st_exp_matrix, sc_AverageExp, d
 }
 
 
-
-#' Calculate double cell cell communication
-#'
-#' @param ct1 Sender cell type name
-#' @param ct2 Receiver cell type name
-#' @param spots_celltype_matrix Result from the function 'Reconstruct_RCTD'.
-#' @param all_celltype_expression_list Result from the function 'Get_reconstruct_ST_expression_ct_list'
-#' @param double_spots_pairs Result from the function 'Get_double_spots_pairs'
-#' @param lrpairs Database of lrpairs
-#' @param n_no_interact Background interaction spots pairs
-#' @param p_cutoff  A cutoff for zero-inflated gamma test
-#' 
-#' @return A.
-#' @export 
-#' @examples
-#' all_celltype_expression_list = Calculate_double_CCC(st_exp_matrix,ct1,ct2, spots_celltype_matrix,all_celltype_expression_list, double_spots_pairs,lrpairs)
-Calculate_double_CCC = function(ct1,ct2, spots_celltype_matrix, all_celltype_expression_list, double_spots_pairs,
-                     lrpairs, n_no_interact = 10000, p_cutoff = 0.95){
-  spots1_remain = rownames(spots_celltype_matrix)[apply(spots_celltype_matrix,1,function(x){(ct1 %in% x)})]
-  spots2_remain = rownames(spots_celltype_matrix)[apply(spots_celltype_matrix,1,function(x){(ct2 %in% x)})]
-  if((length(spots1_remain) == 0) | (length(spots2_remain) == 0)){stop(paste0(ct1, ' and ',ct2, ' have no interaction spots!'))}
-  D_matrix_df_interact = double_spots_pairs$interaction
-  D_matrix_df_no_interact = double_spots_pairs$no_interaction
-
-  D_matrix_df_interact_filter = D_matrix_df_interact[(D_matrix_df_interact$Sender %in% spots1_remain) & (D_matrix_df_interact$Receiver %in% spots2_remain),]
-  if(nrow(D_matrix_df_interact_filter) == 0){stop(paste0('D_matrix_df_interact_filter have 0 row!'))}
-  D_matrix_df_no_interact_filter = D_matrix_df_no_interact[(D_matrix_df_no_interact$Sender %in% spots1_remain) & (D_matrix_df_no_interact$Receiver %in% spots2_remain),]
-  if(nrow(D_matrix_df_no_interact_filter) == 0){stop(paste0('D_matrix_df_no_interact_filter have 0 row!'))}
-  if (dim(D_matrix_df_no_interact_filter)[1] > n_no_interact) {
-    D_matrix_df_no_interact_filter_n = D_matrix_df_no_interact_filter[sample(c(1:dim(D_matrix_df_no_interact_filter)[1]), n_no_interact),]
-  }else{
-    D_matrix_df_no_interact_filter_n = D_matrix_df_no_interact_filter
-  }
-  print(paste0('Start calculate ',ct1,'_',ct2,' LR CCC!'))
-  all_lr_results = list()
-  for (j in 1:dim(lrpairs)[1]) {
-    if((j %% 100) == 0){print(j)}
-    ligand = lrpairs$ligand[j]
-    receptor = lrpairs$receptor[j]
-    ligand_exp = all_celltype_expression_list[[ct1]][ligand,D_matrix_df_interact_filter$Sender]
-    if (sum(ligand_exp)==0) {next}
-    receptor_exp = all_celltype_expression_list[[ct2]][receptor,D_matrix_df_interact_filter$Receiver]
-    if (sum(receptor_exp)==0) {next}
-    outer_score = ligand_exp * receptor_exp
-    if (sum(outer_score) == 0){next}
-    
-    ligand_exp_null = all_celltype_expression_list[[ct1]][ligand,D_matrix_df_no_interact_filter_n$Sender]
-    receptor_exp_null = all_celltype_expression_list[[ct2]][receptor,D_matrix_df_no_interact_filter_n$Receiver]
-    null_distribution = ligand_exp_null * receptor_exp_null
-    null_distribution = as.vector(null_distribution)
-    ## 检验
-    if (quantile(null_distribution, p_cutoff) == 0) {
-      re = data.frame('ct1' = ct1, 'ct2' = ct2, D_matrix_df_interact_filter, 'ligand' = ligand, 'receptor' = receptor, 'outer_score' = outer_score, 'p_value' = 1)
-      re$p_value[re$outer_score > 0] = 0
-    }else{
-      zero_pro = mean(null_distribution == 0)
-      null_distribution_pos = null_distribution[null_distribution > 0]
-      null_mean = mean(null_distribution_pos)
-      null_var = var(null_distribution_pos)
-      p = 1 - pgamma(outer_score, shape = (null_mean * null_mean)/null_var, scale = null_var/null_mean)
-      p = p * (1-zero_pro)
-      re = data.frame(D_matrix_df_interact_filter, 'ct1' = ct1, 'ct2' = ct2, 'ligand' = ligand, 'receptor' = receptor, 'outer_score' = outer_score, 'p_value' = p)
-      re$p_value[re$outer_score == 0] = 1
-    }
-    all_lr_results[[j]] = as.data.table(re)
-  }
-  all_lr_results = rbindlist(all_lr_results, fill = TRUE)
-  all_lr_results = all_lr_results[all_lr_results$outer_score > 0,]
-  return(all_lr_results)
-}
-
-
-
-#' Calculate triple cell cell communication
-#'
-#' @param ct1 Sender cell type name
-#' @param ct2 Mid cell type name
-#' @param ct3 Receiver cell type name
-#' @param spots_celltype_matrix Result from the function 'Reconstruct_RCTD'.
-#' @param double_spots_pairs Result from the function 'Get_double_spots_pairs'
-#' @param mid_spots_cut Database of lrpairs
-#' @param bg_mid_spots_cut_min Background interaction spots pairs
-#' @param p_cutoff  A cutoff for zero-inflated gamma test
-#' 
-#' @return A.
-#' @export 
-#' @examples
-#' all_celltype_expression_list = Calculate_double_CCC(st_exp_matrix,ct1,ct2, spots_celltype_matrix,all_celltype_expression_list, double_spots_pairs,lrpairs)
-get_triple_CCC_pairs = function(ct1, ct2, ct3, spots_celltype_matrix, 
-                                double_spots_pairs, 
-                                mid_spots_cut = 5,
-                                bg_mid_spots_cut_min = 5, bg_mid_spots_cut_max = 100,
-                                bg_spot_pair_cut_max = 10000){
-  D_matrix_df_interact = double_spots_pairs$interaction
-  D_matrix_df_no_interact = double_spots_pairs$no_interaction
-  spots1_remain = rownames(spots_celltype_matrix)[apply(spots_celltype_matrix,1,function(x){(ct1 %in% x)})]
-  spots2_remain = rownames(spots_celltype_matrix)[apply(spots_celltype_matrix,1,function(x){(ct2 %in% x)})]
-  spots3_remain = rownames(spots_celltype_matrix)[apply(spots_celltype_matrix,1,function(x){(ct3 %in% x)})]
-  D_matrix_df_interact_12 = D_matrix_df_interact[(D_matrix_df_interact$Sender %in% spots1_remain) & (D_matrix_df_interact$Receiver %in% spots2_remain),]
-  D_matrix_df_interact_23 = D_matrix_df_interact[(D_matrix_df_interact$Sender %in% spots2_remain) & (D_matrix_df_interact$Receiver %in% spots3_remain),]
-  spots2_both = intersect(names(table(D_matrix_df_interact_12$Receiver)), names(table(D_matrix_df_interact_23$Sender)))
-  if (length(spots2_both) < mid_spots_cut) {stop(paste0(ct1,'_',ct2,'_',ct3,': Trere interacted ct2 was less than ',mid_spots_cut,'.'))}
-  
-  # 拼接互作spots结果
-  D_matrix_df_interact_filter_12 = D_matrix_df_interact_12[D_matrix_df_interact_12$Receiver %in% spots2_both,]
-  D_matrix_df_interact_filter_23 = D_matrix_df_interact_23[D_matrix_df_interact_23$Sender %in% spots2_both,]
-  D_matrix_df_interact_filter_123 = list()
-  for (j in 1:dim(D_matrix_df_interact_filter_12)[1]) {
-    mid = D_matrix_df_interact_filter_12$Receiver[j]
-    D_23 = D_matrix_df_interact_filter_23[D_matrix_df_interact_filter_23$Sender == mid,]
-    re = cbind(D_matrix_df_interact_filter_12[rep(j, dim(D_23)[1]),], D_23)
-    colnames(re) = c("Sender","mid","distance1","mid1","Receiver", "distance2")
-    re$mid1 = NULL
-    D_matrix_df_interact_filter_123[[j]] = as.data.table(re)
-  }
-  D_matrix_df_interact_filter_123 = rbindlist(D_matrix_df_interact_filter_123, fill = TRUE)
-  rm(D_matrix_df_interact_filter_12, D_matrix_df_interact_filter_23)
-  print(paste0(ct1,'_',ct2,'_',ct3,' finished get D_matrix_df_interact_filter_123'))
-  
-  # 构建背景的spots组合
-  D_matrix_df_no_interact_filter_12 = D_matrix_df_no_interact[(D_matrix_df_no_interact$Sender %in% spots1_remain) & (D_matrix_df_no_interact$Receiver %in% spots2_remain),]
-  D_matrix_df_no_interact_filter_23 = D_matrix_df_no_interact[(D_matrix_df_no_interact$Sender %in% spots2_remain) & (D_matrix_df_no_interact$Receiver %in% spots3_remain),]
-  spots2_remain_filter2 = intersect(names(table(D_matrix_df_no_interact_filter_12$Receiver)), names(table(D_matrix_df_no_interact_filter_23$Sender)))
-  if (length(spots2_remain_filter2) < bg_mid_spots_cut_min) {stop(paste0(ct1,'_',ct2,'_',ct3,': Trere background interacted ct2 was less than ',bg_mid_spots_cut_min,'.'))}
-  
-  if (nrow(D_matrix_df_no_interact_filter_12) > bg_spot_pair_cut_max) {
-    D_matrix_df_no_interact_filter_12 = D_matrix_df_no_interact_filter_12[sample(1:nrow(D_matrix_df_no_interact_filter_12), bg_spot_pair_cut_max),]
-  }
-  if (nrow(D_matrix_df_no_interact_filter_23) > bg_spot_pair_cut_max) {
-    D_matrix_df_no_interact_filter_23 = D_matrix_df_no_interact_filter_23[sample(1:nrow(D_matrix_df_no_interact_filter_23), bg_spot_pair_cut_max),]
-  }
-  spots2_remain_filter2 = intersect(names(table(D_matrix_df_no_interact_filter_12$Receiver)), names(table(D_matrix_df_no_interact_filter_23$Sender)))
-  if (length(spots2_remain_filter2) > bg_mid_spots_cut_max){
-    spots2_remain_filter2 = spots2_remain_filter2[sample(1:length(spots2_remain_filter2), bg_mid_spots_cut_max,replace = F)]
-  }
-  D_matrix_df_no_interact_filter_12 = D_matrix_df_no_interact_filter_12[D_matrix_df_no_interact_filter_12$Receiver %in% spots2_remain_filter2,]
-  D_matrix_df_no_interact_filter_23 = D_matrix_df_no_interact_filter_23[D_matrix_df_no_interact_filter_23$Sender %in% spots2_remain_filter2,]
-  
-  D_matrix_df_no_interact_filter_123_sereis = list()
-  for (j in 1:nrow(D_matrix_df_no_interact_filter_12)) {
-    mid = D_matrix_df_no_interact_filter_12$Receiver[j]
-    D_23 = D_matrix_df_no_interact_filter_23[D_matrix_df_no_interact_filter_23$Sender == mid,]
-    re = cbind(D_matrix_df_no_interact_filter_12[rep(j, dim(D_23)[1]),], D_23)
-    colnames(re) = c("Sender","mid","distance1","mid1","Receiver", "distance2")
-    re$mid1 = NULL
-    D_matrix_df_no_interact_filter_123_sereis[[j]] = as.data.table(re)
-  }
-  D_matrix_df_no_interact_filter_123_sereis = rbindlist(D_matrix_df_no_interact_filter_123_sereis, fill = TRUE)
-  rm(D_matrix_df_no_interact_filter_12,D_matrix_df_no_interact_filter_23)
-  
-  if (nrow(D_matrix_df_no_interact_filter_123_sereis) > bg_spot_pair_cut_max) {
-    D_matrix_df_no_interact_filter_123_sereis = D_matrix_df_no_interact_filter_123_sereis[sample(1:dim(D_matrix_df_no_interact_filter_123_sereis)[1], 1000),]
-    spots2_remain_filter2 = unique(D_matrix_df_no_interact_filter_123_sereis$mid)
-  }
-  D_matrix_df_no_interact_filter_123_sereis = D_matrix_df_no_interact_filter_123_sereis[D_matrix_df_no_interact_filter_123_sereis$mid %in% spots2_remain_filter2,]
-  
-  print(paste0(ct1,'_',ct2,'_',ct3,' finished get D_matrix_df_no_interact_filter_123_sereis'))
-  re = list(D_matrix_df_interact_filter_123,D_matrix_df_no_interact_filter_123_sereis)
-  names(re) = c('interaction_spots_pairs', 'background_no_interaction_spots_pairs')
-  return(re)
-}
-
-
-#' Prepare intracelluar Receptor Liagnd siganal database
-#'
-#' @param lrpairs1 Provide the preceding LR pairs. A data frame containing two columns with the name 'Ligand' and 'Receptor'
-#' @param lrpairs2 Provide the following LR pairs. A data frame containing two columns with the name 'Ligand' and 'Receptor'
-#' @param rl_database Database of rl signal database
-#' @param min_network_gene_num Background interaction spots pairs
-#' 
-#' @return A.
-#' @export 
-#' @examples
-#' all_celltype_expression_list = Calculate_double_CCC(st_exp_matrix,ct1,ct2, spots_celltype_matrix,all_celltype_expression_list, double_spots_pairs,lrpairs)
-
-Prepare_lr_rl_lr <- function(lrpairs1, lrpairs2, rl_database, min_network_gene_num = 35, min_cutoff = 5){
-  rl_database_fil = rl_database[rl_database$receptor %in% lrpairs1$receptor & rl_database$ligand %in% lrpairs2$ligand,]
-  rl_database_fil = rl_database_fil[rl_database_fil$network_gene_num2 > min_network_gene_num,]
-  rl_database_fil = as.data.frame(rl_database_fil)
-  if(nrow(rl_database_fil) < min_cutoff){
-    stop(paste0('Receptor-Liagnd may have no intracelluar signal in rl_database(less than',min_cutoff,')'))
-  }
-  RL_mid_genes = separate_rows(rl_database_fil, network_genes2, sep = "_")
-  RL_mid_genes = RL_mid_genes[,c(1,2,6,7)]
-  colnames(RL_mid_genes)[3] = 'network_genes'
-  
-  merge_lrpairs = merge(lrpairs1, lrpairs2, by = NULL)
-  colnames(merge_lrpairs) = c('ligand1','receptor1','ligand2','receptor2')
-  merge_lrpairs$rl = paste0(merge_lrpairs$receptor1,"_",merge_lrpairs$ligand2)
-  merge_lrpairs = merge_lrpairs[merge_lrpairs$rl %in% rl_database_fil$rl,]
-  results = list('Merged_lipairs' = merge_lrpairs, 'Intracelluar_siganal_genes'=RL_mid_genes)
-  return(results)
-}
-
-
-
-
-
-
-
-
-#' Prepare a object to calculate triple cell cell communication
-#'
-#' @param ct1 Sender cell type name
-#' @param ct2 Mid cell type name
-#' @param ct3 Receiver cell type name
-#' @param all_celltype_expression_list Result from the function 'Get_reconstruct_ST_expression_ct_list'.
-#' @param triple_interaction_pairs Result from the function 'Get_double_spots_pairs'
-#' @param lrpairs1 Provide the preceding LR pairs. A data frame containing two columns with the name 'Ligand' and 'Receptor'
-#' @param lrpairs2 Provide the following LR pairs. A data frame containing two columns with the name 'Ligand' and 'Receptor'
-#' @param rl_database Database of rl signal database
-#' @param bg_mid_spots_cut_min Background interaction spots pairs
-#' @param p_cutoff  A cutoff for zero-inflated gamma test
-#' 
-#' @return A.
-#' @export 
-#' @examples
-#' all_celltype_expression_list = Calculate_double_CCC(st_exp_matrix,ct1,ct2, spots_celltype_matrix,all_celltype_expression_list, double_spots_pairs,lrpairs)
-
-Prepare_calculate_triple_CCC <- function(ct1, ct2, ct3, all_celltype_expression_list, 
-                                 triple_interaction_pairs,
-                                 p_cutoff = 0.95){
-  interaction_spots_pairs = triple_interaction_pairs$interaction_spots_pairs
-  bg_spots_pairs = triple_interaction_pairs$background_no_interaction_spots_pairs
-  
-  # 从上一步互作的pairs中得到中间细胞的像个基因表达
-  ct2_spots = unique(interaction_spots_pairs$mid)
-  inner_exp = cbind(RL_mid_genes, as.matrix(all_celltype_expression_list[[ct2]][RL_mid_genes$network_gene, ct2_spots]))
-  
-  rl_remain = unique(inner_exp$rl)
-  mid_spot_inner_score = list()
-  for (i in 1:length(rl_remain)) {
-    if ((i %% 100) == 0) {print(i)}
-    x = inner_exp[inner_exp$rl == rl_remain[i],]
-    x = x[,-c(1:2)] %>% as.matrix()
-    score = apply(x, 2, function(x){
-      sum(x)})
-    re = data.frame('rl' = rl_remain[i], t(as.data.frame(score)))
-    mid_spot_inner_score[[i]] = as.data.table(re)
-  }
-  mid_spot_inner_score = rbindlist(mid_spot_inner_score, fill = T)
-  mid_spot_inner_score = as.data.frame(mid_spot_inner_score)
-  mid_spot_inner_score = mid_spot_inner_score[,-1]
-  rownames(mid_spot_inner_score) = rl_remain
-  colnames(mid_spot_inner_score) = ct2_spots
-  
-  
-  bg_spots = unique(bg_spots_pairs$mid)
-  bg_inner_exp = cbind(RL_mid_genes, as.matrix(all_celltype_expression_list[[ct2]][RL_mid_genes$network_gene, bg_spots]))
-  bg_mid_spot_inner_score = list()
-  for (i in 1:length(rl_remain)) {
-    if ((i %% 100) == 0) {print(i)}
-    x = bg_inner_exp[bg_inner_exp$rl == rl_remain[i],]
-    x = x[,-c(1:2)] %>% as.matrix()
-    score = apply(x, 2, function(x){
-      sum(x)
-    })
-    re = data.frame('rl' = rl_remain[i], t(as.data.frame(score)))
-    bg_mid_spot_inner_score[[i]] = as.data.table(re)
-  }
-  bg_mid_spot_inner_score = rbindlist(bg_mid_spot_inner_score, fill = T)
-  bg_mid_spot_inner_score = as.data.frame(bg_mid_spot_inner_score)
-  bg_mid_spot_inner_score = bg_mid_spot_inner_score[,-1]
-  rownames(bg_mid_spot_inner_score) = rl_remain
-  colnames(bg_mid_spot_inner_score) = bg_spots
-  
-  
-  # 需要进行过滤，大部分lr和lr没有串联证据
-  merge_lrpairs_filter = merge_lrpairs[merge_lrpairs$RL %in% rl_remain,]
-  x1 = all_celltype_expression_list[[ct1]][merge_lrpairs_filter$ligand1, interaction_spots_pairs$Sender]
-  merge_lrpairs_filter = merge_lrpairs_filter[which(rowSums(x1) != 0),]
-  x2 = all_celltype_expression_list[[ct2]][merge_lrpairs_filter$receptor1, interaction_spots_pairs$mid]
-  merge_lrpairs_filter = merge_lrpairs_filter[which(rowSums(x2) != 0),]
-  x3 = all_celltype_expression_list[[ct2]][merge_lrpairs_filter$ligand2, interaction_spots_pairs$mid]
-  merge_lrpairs_filter = merge_lrpairs_filter[which(rowSums(x3) != 0),]
-  x4 = all_celltype_expression_list[[ct3]][merge_lrpairs_filter$receptor2, interaction_spots_pairs$Receiver]
-  merge_lrpairs_filter = merge_lrpairs_filter[which(rowSums(x4) != 0),]
-  
-  all_re = list()
-  for (i in 1:nrow(merge_lrpairs_filter)) {
-    if((i %% 100) == 0){print(i)}
-    exp_ligand1 = all_celltype_expression_list[[ct1]][merge_lrpairs_filter$ligand1[i],interaction_spots_pairs$Sender]
-    exp_receptor1 = all_celltype_expression_list[[ct2]][merge_lrpairs_filter$receptor1[i],interaction_spots_pairs$mid]
-    exp_ligand2 = all_celltype_expression_list[[ct2]][merge_lrpairs_filter$ligand2[i],interaction_spots_pairs$mid]
-    exp_receptor2 = all_celltype_expression_list[[ct3]][merge_lrpairs_filter$receptor2[i],interaction_spots_pairs$Receiver]
-    RL_score = mid_spot_inner_score[merge_lrpairs_filter$RL[i],interaction_spots_pairs$mid] %>% t() %>% as.vector()
-    final_score = exp_ligand1 * exp_receptor1 * exp_ligand2 * exp_receptor2 * RL_score * 10000
-    final_score2 = which(final_score > 0)
-    if (length(final_score2) > 0) {
-      re = data.frame(merge_lrpairs_filter[rep(i,length(final_score2)),], interaction_spots_pairs[final_score2,], 'score' = final_score[final_score2], 'p'=1)
-    }else{
-      next
-    }
-    exp_ligand1_null = all_celltype_expression_list[[ct1]][merge_lrpairs_filter$ligand1[i], bg_spots_pairs$Sender]
-    exp_receptor1_null = all_celltype_expression_list[[ct2]][merge_lrpairs_filter$receptor1[i], bg_spots_pairs$mid]
-    exp_ligand2_null = all_celltype_expression_list[[ct2]][merge_lrpairs_filter$ligand2[i], bg_spots_pairs$mid]
-    exp_receptor2_null = all_celltype_expression_list[[ct3]][merge_lrpairs_filter$receptor2[i], bg_spots_pairs$Receiver]
-    RL_score_null = bg_mid_spot_inner_score[merge_lrpairs_filter$RL[i],bg_spots_pairs$mid] %>% t() %>% as.vector()
-    final_score_null = exp_ligand1_null * exp_receptor1_null * exp_ligand2_null * exp_receptor2_null * RL_score_null * 10000
-    if (quantile(final_score_null,0.95) == 0) {
-      re$p = 0
-      all_re[[i]] = as.data.table(re)
-    }else{
-      zero_pro = mean(final_score_null == 0)
-      null_distribution_pos = final_score_null[final_score_null > 0]
-      null_mean = mean(null_distribution_pos)
-      null_var = var(null_distribution_pos)
-      p = 1 - pgamma(re$p, shape = (null_mean * null_mean)/null_var, scale = null_var/null_mean)
-      p = p * (1-zero_pro)
-      re$p = p
-      all_re[[i]] = as.data.table(re)
-    }
-  }
-  return(all_re)
-}
-
-
-
-
-
-
-#' Calculate triple cell cell communication
-#'
-#' @param ct1 Sender cell type name
-#' @param ct2 Mid cell type name
-#' @param ct3 Receiver cell type name
-#' @param spots_celltype_matrix Result from the function 'Reconstruct_RCTD'.
-#' @param double_spots_pairs Result from the function 'Get_double_spots_pairs'
-#' @param mid_spots_cut Database of lrpairs
-#' @param bg_mid_spots_cut_min Background interaction spots pairs
-#' @param p_cutoff  A cutoff for zero-inflated gamma test
-#' 
-#' @return A.
-#' @export 
-#' @examples
-#' all_celltype_expression_list = Calculate_double_CCC(st_exp_matrix,ct1,ct2, spots_celltype_matrix,all_celltype_expression_list, double_spots_pairs,lrpairs)
-
-Calculate_triple_CCC <- function(ct1, ct2, ct3, all_celltype_expression_list, 
-         triple_interaction_pairs,
-         lr_rl_lr_list){
-  interaction_spots_pairs = triple_interaction_pairs$interaction_spots_pairs
-  bg_spots_pairs = triple_interaction_pairs$background_no_interaction_spots_pairs
-  Merged_lrpairs = lr_rl_lr_list$Merged_lipairs
-  Intracelluar_siganal_genes = lr_rl_lr_list$Intracelluar_siganal_genes
-  
-  # 根据表达中存在的gene，进一步过滤merged lrpairs interacelluar signal gene
-  all_genes = rownames(all_celltype_expression_list[[ct1]])
-  Intracelluar_siganal_genes = Intracelluar_siganal_genes[Intracelluar_siganal_genes$network_genes %in% all_genes,]
-  rl_remain = unique(Intracelluar_siganal_genes$rl)
-  Merged_lrpairs = Merged_lrpairs[Merged_lrpairs$rl %in% rl_remain,]
-  
-  ### 根据lrpairs1 和 lrpairs2 的任意基因表达情况再进行过滤
-  x1 = all_celltype_expression_list[[ct1]][unique(Merged_lrpairs$ligand1), interaction_spots_pairs$Sender] %>% as.matrix()
-  x1 = rownames(x1)[rowSums(x1) == 0]
-  
-  x2 = all_celltype_expression_list[[ct2]][unique(Merged_lrpairs$receptor1), interaction_spots_pairs$mid] %>% as.matrix()
-  x2 = rownames(x2)[rowSums(x2) == 0]
-  
-  x3 = all_celltype_expression_list[[ct2]][unique(Merged_lrpairs$ligand2), interaction_spots_pairs$mid] %>% as.matrix()
-  x3 = rownames(x3)[rowSums(x3) == 0]
-  
-  x4 = all_celltype_expression_list[[ct3]][unique(Merged_lrpairs$receptor2), interaction_spots_pairs$Receiver] %>% as.matrix()
-  x4 = rownames(x4)[rowSums(x4) == 0]
-  
-  Merged_lrpairs = Merged_lrpairs[!(Merged_lrpairs$ligand1 %in% x1) & !(Merged_lrpairs$receptor1 %in% x2) & 
-                                    !(Merged_lrpairs$ligand2 %in% x3) & !(Merged_lrpairs$receptor2 %in% x4),]
-  Intracelluar_siganal_genes = Intracelluar_siganal_genes[Intracelluar_siganal_genes$rl %in% Merged_lrpairs$rl,]
-
-  rl_remain = unique(Intracelluar_siganal_genes$rl)
-  
-  # 中介细胞的细胞内信号gene表达
-  ct2_spots = unique(interaction_spots_pairs$mid)
-  inner_exp = cbind(Intracelluar_siganal_genes, as.matrix(all_celltype_expression_list[[ct2]][Intracelluar_siganal_genes$network_genes, ct2_spots]))
-  mid_spots_intracelluar_score = inner_exp[,-c(1:3)]
-  mid_spots_intracelluar_score = mid_spots_intracelluar_score %>%
-    group_by(rl) %>%
-    summarise(across(c(colnames(mid_spots_intracelluar_score)[-1]), sum)) %>% 
-    as.data.frame()
-  mid_spots_intracelluar_score = mid_spots_intracelluar_score[,-1]
-  rownames(mid_spots_intracelluar_score) = rl_remain
-  colnames(mid_spots_intracelluar_score) = ct2_spots
-  
-  ### 根据lrpairs1 和 lrpairs2 的任意基因表达情况再进行过滤
-  bg_spots = unique(bg_spots_pairs$mid)
-  bg_inner_exp = cbind(Intracelluar_siganal_genes, as.matrix(all_celltype_expression_list[[ct2]][Intracelluar_siganal_genes$network_genes, bg_spots]))
-  bg_mid_spots_intracelluar_score = bg_inner_exp[,-c(1:3)]
-  bg_mid_spots_intracelluar_score = bg_mid_spots_intracelluar_score %>%
-    group_by(rl) %>%
-    summarise(across(c(colnames(bg_mid_spots_intracelluar_score)[-1]), sum)) %>% 
-    as.data.frame()
-  bg_mid_spots_intracelluar_score = bg_mid_spots_intracelluar_score[,-1]
-  rownames(bg_mid_spots_intracelluar_score) = rl_remain
-  colnames(bg_mid_spots_intracelluar_score) = bg_spots
-  
-  all_re = list()
-  print(paste0('There are ',nrow(Merged_lrpairs), ' lr1-lr2 series interactions!'))
-  for (n_M_lr in 1:nrow(Merged_lrpairs)) {
-    if((n_M_lr %% 100) == 0){print(n_M_lr)}
-    exp_ligand1 = all_celltype_expression_list[[ct1]][Merged_lrpairs$ligand1[n_M_lr],interaction_spots_pairs$Sender]
-    exp_receptor1 = all_celltype_expression_list[[ct2]][Merged_lrpairs$receptor1[n_M_lr],interaction_spots_pairs$mid]
-    exp_ligand2 = all_celltype_expression_list[[ct2]][Merged_lrpairs$ligand2[n_M_lr],interaction_spots_pairs$mid]
-    exp_receptor2 = all_celltype_expression_list[[ct3]][Merged_lrpairs$receptor2[n_M_lr],interaction_spots_pairs$Receiver]
-    RL_score = mid_spots_intracelluar_score[Merged_lrpairs$rl[n_M_lr],interaction_spots_pairs$mid] %>% t() %>% as.vector()
-    final_score = exp_ligand1 * exp_receptor1 * exp_ligand2 * exp_receptor2 * RL_score * 10000
-    final_score2 = which(final_score > 0)
-    if (length(final_score2) > 0) {
-      re = data.frame(Merged_lrpairs[rep(n_M_lr,length(final_score2)),], interaction_spots_pairs[final_score2,], 'score' = final_score[final_score2], 'p'=1)
-    }else{
-      next
-    }
-    exp_ligand1_null = all_celltype_expression_list[[ct1]][Merged_lrpairs$ligand1[n_M_lr], bg_spots_pairs$Sender]
-    exp_receptor1_null = all_celltype_expression_list[[ct2]][Merged_lrpairs$receptor1[n_M_lr], bg_spots_pairs$mid]
-    exp_ligand2_null = all_celltype_expression_list[[ct2]][Merged_lrpairs$ligand2[n_M_lr], bg_spots_pairs$mid]
-    exp_receptor2_null = all_celltype_expression_list[[ct3]][Merged_lrpairs$receptor2[n_M_lr], bg_spots_pairs$Receiver]
-    RL_score_null = bg_mid_spots_intracelluar_score[Merged_lrpairs$rl[n_M_lr],bg_spots_pairs$mid] %>% t() %>% as.vector()
-    final_score_null = exp_ligand1_null * exp_receptor1_null * exp_ligand2_null * exp_receptor2_null * RL_score_null * 10000
-    if (quantile(final_score_null,0.95) == 0) {
-      re$p = 0
-      all_re[[n_M_lr]] = as.data.table(re)
-    }else{
-      zero_pro = mean(final_score_null == 0)
-      null_distribution_pos = final_score_null[final_score_null > 0]
-      null_mean = mean(null_distribution_pos)
-      null_var = var(null_distribution_pos)
-      p = 1 - pgamma(re$p, shape = (null_mean * null_mean)/null_var, scale = null_var/null_mean)
-      p = p * (1-zero_pro)
-      re$p = p
-      all_re[[n_M_lr]] = as.data.table(re)
-    }
-  }
-  all_re = rbindlist(all_re, fill = T) %>% as.data.frame()
-  all_re = all_re[all_re$p < 0.05,]
-  
-  Merged_lrpairs = Merged_lrpairs[Merged_lrpairs$rl %in% all_re$rl,]
-  Intracelluar_siganal_genes = Intracelluar_siganal_genes[Intracelluar_siganal_genes$rl %in% all_re$rl,]
-  interaction_spots_pairs = unique(all_re[,c(6:10)])
-  
-  results = list('All_score' = all_re, 'Merged_lrpairs' = Merged_lrpairs, 
-                 'Intracelluar_siganal_genes' = Intracelluar_siganal_genes, 
-                 'interaction_spots_pairs' = interaction_spots_pairs)
-  return(results)
-}
-
-
 #' Calculate combined intracelluar Receptor-Liagnd siganal weight
 #'
-#' @param Input Normalized expression data matrix
-#' @param Anno If mode is 'CellType', you need to provide the annotation of cells/spots
-#' @param PPI_database A database of protein-protein interaction. 
-#' Default is omnipath ppi database which contains a column called 'functional' which means stimulation, inhibition or unknown function by 1,-1,0.
+#' @param Input A matrix containing gene expression data. (Recommend scRNA_mean_expression)
+#' @param cell_ids The col.names selected to be calculate. If NULL, it will be selected all columns.
+#' @param PPI_db A database of protein-protein interaction. 
+#' If NULL, it will be inferred from the data which contains a column called 'functional' which means stimulation, inhibition or unknown function by 1,-1,0. 
 #' If you want to provide yourself database, it should contain a 'functional' column and set the parameter 1.
-#' @param Pro_loc_db A database of protein location.
-#' Default is organized Uniprot database which contains a column called 'father_location' which contains three param 'Membrane', 'Intracellular' and 'Nuluar'.
-#' If you want to provide yourself database, it should contain a 'father_location' column and set param.
-#' @param lr_db A database of ligand-receptor.
+#' @param Pro_loc_db A database of protein location. If NULL, it will be inferred from the data.
+#' Default is organized Uniprot database which contains a column called 'location' which contains param 'Membrane', 'Intracellular' and 'Nuluar'.
+#' If you want to provide yourself database, it should contain a 'location' column and set param.
+#' @param lr_db A database of ligand-receptor. If NULL, it will be inferred from the data.
 #' Default is the lr_db database from 'Spatalk' which contains two columns called 'ligand' and 'receptor'
 #' @param f_edge A function to calculate score of each edge, default is Hill function.
-#' @param expression_cutoff A quantile to build a subgraph containing genes over cutoff. Default is 0.9.
+#' @param Kn The parameter of Hill function. Default is 2.
 #' @param cutoff1 A quantile to select the probility of R-L pairs over cutoff. Default is 0.5.
-#' @param max_steps find_simple_path max steps in each R-L pairs
-#' @param max_num number of paths to calculate path scores
-#' @param alpha Path score and circuit score coefficients 
+#' @param cutoff2 A quantile to build a subgraph containing genes over cutoff. Default is 0.9.
+#' @param max_steps The max steps to be find in each R-L signal networks. Default is 5.
+#' @param max_num The number of paths to be selected to calculate path scores. Default is 20.
+#' @param circuit_scale_factor Adjustment of scaling factor for circuit score. Default is 0.1.
+#' @param adjust_alpha A logical parameter that determines whether to adjust alpha. Default is TRUE.
+#' @param target_ratio The goal of alpha adjustment. Default is 0.5.
+#' @param parallel A logical parameter that determines whether to do parallel. Default is TRUE.
+#' @param n_core The number of cores used for parallel computing. If NULL, it will be detectCores() - 2.
 #' 
-#' 
-#' @return A dataframe of Receptor-Ligand signal weights of each cell or celltypes
+#' @return A dataframe of Receptor-Ligand signal weights of each cell_id
 #' @export 
 #' @examples
-#' utils::data("test_exp_data", package = "stMCCC")
-#' utils::data("test_anno", package = "stMCCC")
-#' results = Calculate_Combined_RL_weight(test_exp_data[,1,drop = F], 'SingleCell')
-#' results = Calculate_Combined_RL_weight(test_exp_data, test_anno$Label, 'CellType')
+#' utils::data("test_scRNA_mean_expression", package = "stMCCC")
+#' results = Calculate_Combined_RL_weight(test_scRNA_mean_expression)
+
 
 Calculate_Combined_RL_weight = function(Input,
                                         cell_ids = NULL,
@@ -673,14 +249,13 @@ Calculate_Combined_RL_weight = function(Input,
       n_core <- detectCores() - 2
     }
     cl <- makeCluster(n_core, type = "FORK")
-    results <- do.call(rbind, pbapply::pblapply(cell_ids, cl = cl,function(cid) {
+    results <- do.call(rbind, pbapply::pblapply(cell_ids, cl = cl, function(cid) {
       expr_vec <- exp_data[, cid]
       names(expr_vec) <- rownames(exp_data)
       filter_genes <- names(expr_vec)[expr_vec > 0]
       if(length(filter_genes) > 3000){
         filter_genes = names(expr_vec)[expr_vec > quantile(expr_vec, cutoff2)]
       }
-      
       subgraph <- igraph::induced_subgraph(ppi_graph, which(V(ppi_graph)$name %in% filter_genes))
       # 将subgraph的所有边的权重算一下
       all_edges = as_data_frame(subgraph, what = 'edges')
@@ -714,7 +289,6 @@ Calculate_Combined_RL_weight = function(Input,
       names(I_full) <- nodes
       
       # 对每个细胞计算所有RL对的得分
-      
       inner_results <- pbapply::pblapply(1:nrow(rl_pairs_ct), function(g) {
         receptor <- rl_pairs_ct$receptor[g]
         ligand <- rl_pairs_ct$ligand[g]
@@ -891,466 +465,12 @@ Calculate_Combined_RL_weight = function(Input,
 }
 
 
-
-
-
-#' Calculate muti-cellular interactions in celltype resolution
-#'
-#' @param Input Normalized expression data matrix
-#' @param Anno If mode is 'CellType', you need to provide the annotation of cells/spots
-#' @param PPI_database A database of protein-protein interaction. 
-#' Default is omnipath ppi database which contains a column called 'functional' which means stimulation, inhibition or unknown function by 1,-1,0.
-#' If you want to provide yourself database, it should contain a 'functional' column and set the parameter 1.
-#' @param Location_database A database of protein location.
-#' Default is organized Uniprot database which contains a column called 'father_location' which contains three param 'Membrane', 'Intracellular' and 'Nuluar'.
-#' If you want to provide yourself database, it should contain a 'father_location' column and set param.
-#' @param lrpairs A database of ligand-receptor.
-#' Default is the lrpairs database from 'Spatalk' which contains two columns called 'ligand' and 'receptor'
-#' @param f_edge A function to calculate score of each edge, default is Hill function.
-#' @param expression_cutoff A quantile to build a subgraph containing genes over cutoff. Default is 0.9.
-#' @param lr_expression_cutoff A quantile to select the probility of R-L pairs over cutoff. Default is 0.5.
-#' @param max_steps find_simple_path max steps in each R-L pairs
-#' @param max_num number of paths to calculate path scores
-#' @param alpha Path score and circuit score coefficients 
-#' 
-#' 
-#' @return A dataframe of Receptor-Ligand signal weights of each cell or celltypes
-#' @export 
-#' @examples
-#' utils::data("test_exp_data", package = "stMCCC")
-#' utils::data("test_anno", package = "stMCCC")
-#' results = Calculate_Combined_RL_weight(test_exp_data[,1,drop = F], 'SingleCell')
-#' results = Calculate_Combined_RL_weight(test_exp_data, test_anno$Label, 'CellType')
-
-calculate_multi_cci = function(Input, deconvolution_result, scRNA_mean_expression, relay_signal = NULL ,lrpairs = NULL) {
-  cat("=== Start calculate muticellular cell cell interaction ===\n")
-  start_time <- Sys.time()
-  
-  # 1. 加载配体-受体对数据
-  if (is.null(lrpairs)) {
-    cat("··· Load lrpairs database \n")
-    utils::data("SpaTalk_lrpairs", package = "stMCCC")
-    lrpairs <- SpaTalk_lrpairs[, c("ligand", "receptor")]
-    cat("  Finished! There are ", nrow(lrpairs), " lr pairs. \n")
-  } else {
-    cat("  Finished! There are ", nrow(lrpairs), " lr pairs. \n")
-  }
-  
-  # 2. 准备细胞类型信息
-  all_celltype = colnames(deconvolution_result)
-  cat("··· Detected these cell types: \n", paste(all_celltype, collapse = ", "), "\n")
-  
-  # 3. 表达重构
-  cat("··· Start reconstruct expression...\n")
-  spots_celltype_matrix = do.call("Construct_spots_celltype", list(deconvolution_result))
-  deconvolution_reconsitution = do.call("Reconstruct_RCTD", list(deconvolution_result, spots_celltype_matrix))
-  all_celltype_expression_list = do.call("Get_reconstruct_ST_expression_ct_list", 
-                                         list(Input, scRNA_mean_expression, deconvolution_reconsitution))
-  cat("  Finished! Dim: ", dim(deconvolution_reconsitution)[1], "spots ×", dim(deconvolution_reconsitution)[2], "cell types \n")
-  
-  # 4. 计算中继信号
-  if (is.null(relay_signal)) {
-    cat("··· Start calculate relay signal \n")
-    relay_signal = do.call("Calculate_Combined_RL_weight", list(scRNA_mean_expression, 'SingleCell'))
-    relay_signal = relay_signal[relay_signal$combined_score > 0, ]
-    relay_signal$RL = paste0(relay_signal$receptor, '-', relay_signal$ligand)
-    cat("   Finished! There are ", nrow(relay_signal), "RL pairs. \n")
-  } else {
-    relay_signal$RL = paste0(relay_signal$receptor, '-', relay_signal$ligand)
-    cat("··· There are ", nrow(relay_signal), "RL pairs of input relay_signal. \n")
-  }
-  
-  # 5. 构建relay矩阵
-  cat("··· Construct relay matrix \n")
-  relay_matrix = relay_signal[,-c(1,2,4,5,6)] %>% 
-    pivot_wider(names_from = cell_id, values_from = combined_score, values_fill = 0) %>% 
-    as.data.frame()
-  rownames(relay_matrix) = relay_matrix$RL
-  relay_matrix = relay_matrix[,-1] %>% as.matrix()
-  cat("  Finished! Dim: ", dim(relay_matrix)[1], "RL ×", dim(relay_matrix)[2], "cell types \n")
-  
-  # 6. 计算空间基因表达均值
-  cat("··· Start calculate spatial gene mean expression \n")
-  spatial_mean_expression = matrix(0, nrow = nrow(Input), ncol = ncol(deconvolution_reconsitution), 
-                                   dimnames = list(rownames(Input), colnames(deconvolution_reconsitution)))
-  for (i in 1:ncol(spatial_mean_expression)) { 
-    spatial_mean_expression[,i] = apply(Input,1,function(x){x * deconvolution_reconsitution[,i]}) %>% t() %>% rowMeans()
-  }
-  cat("  Finished! \n")
-  
-  # 7. 过滤表达的基因
-  cat("··· Start filter genes \n")
-  all_expressed_gene = rownames(spatial_mean_expression)[rowSums(spatial_mean_expression) != 0]
-  lrpairs = lrpairs[lrpairs$ligand %in% all_expressed_gene & lrpairs$receptor %in% all_expressed_gene,]
-  lrpairs$LR = paste0(lrpairs$ligand,'-', lrpairs$receptor)
-  rl_pairs = relay_signal$RL[relay_signal$receptor %in% all_expressed_gene & relay_signal$ligand %in% all_expressed_gene] %>% unique()
-  rl_pairs = rl_pairs[rl_pairs %in% relay_signal$RL]
-  cat("  Finished! There are ", nrow(lrpairs), "LR pairs \n")
-  
-  # 8. 计算两两细胞互作
-  cat("··· Calculate double cell type interaction score \n")
-  double_celltype = expand.grid('ct1' = all_celltype, 'ct2' = all_celltype, stringsAsFactors = F)
-  double_celltype$d_ctp = paste0(double_celltype$ct1,'-',double_celltype$ct2)
-  double_celltype_interaction = matrix(0, nrow = nrow(lrpairs), ncol = nrow(double_celltype), 
-                                       dimnames = list(lrpairs$LR, double_celltype$d_ctp))
-  for (i in 1:ncol(double_celltype_interaction)) {
-    double_celltype_interaction[,i] = spatial_mean_expression[lrpairs$ligand, double_celltype$ct1[i]] * 
-      spatial_mean_expression[lrpairs$receptor, double_celltype$ct2[i]] * 10^4
-  }
-  cat("  Finished! Dim: ", dim(double_celltype_interaction)[1], "LR ×", dim(double_celltype_interaction)[2], "cell pairs\n")
-  
-  # 9. 准备三细胞组合
-  cat("··· Prepair triple cell type pairs \n")
-  tri_cell_pairs = expand.grid('ct1' = all_celltype, 'ct2' = all_celltype, 'ct3' = all_celltype, stringsAsFactors = F)
-  tri_cell_pairs$ct1_ct2 = paste0(tri_cell_pairs$ct1,'-',tri_cell_pairs$ct2)
-  tri_cell_pairs$ct2_ct3 = paste0(tri_cell_pairs$ct2,'-',tri_cell_pairs$ct3)
-  tri_cell_pairs$ct1_ct2_ct3 = paste0(tri_cell_pairs$ct1,'-',tri_cell_pairs$ct2,'-',tri_cell_pairs$ct3)
-  cat(" Finished! There are ", nrow(tri_cell_pairs), "triple cell type pairs. \n")
-  
-  # 10. 准备LR对组合
-  cat("··· Prepair double lr pairs \n")
-  double_lrpairs = expand.grid('lr1' = lrpairs$LR, 'lr2' = lrpairs$LR, stringsAsFactors = F)
-  double_lrpairs$ligand1 = lrpairs$ligand[match(double_lrpairs$lr1, lrpairs$LR)]
-  double_lrpairs$receptor1 = lrpairs$receptor[match(double_lrpairs$lr1, lrpairs$LR)]
-  double_lrpairs$ligand2 = lrpairs$ligand[match(double_lrpairs$lr2, lrpairs$LR)]
-  double_lrpairs$receptor2 = lrpairs$receptor[match(double_lrpairs$lr2, lrpairs$LR)]
-  double_lrpairs$RL = paste0(double_lrpairs$receptor1,'-',double_lrpairs$ligand2)
-  double_lrpairs = double_lrpairs[double_lrpairs$RL %in% rl_pairs,]
-  double_lrpairs$LRLR = paste0(double_lrpairs$lr1,'-',double_lrpairs$lr2)
-  cat("  Finished! There are ", nrow(double_lrpairs), "lr-lr pairs. \n")
-  
-  # 11. 计算三细胞互作
-  cat("··· Calculate triple cell type interaction score \n")
-  tri_cell_interaction = matrix(0, nrow = nrow(double_lrpairs), ncol = nrow(tri_cell_pairs))
-  colnames(tri_cell_interaction) = tri_cell_pairs$ct1_ct2_ct3
-  rownames(tri_cell_interaction) = double_lrpairs$LRLR
-  
-  progress_interval = max(round(nrow(tri_cell_pairs)/10), 100)  # 进度汇报间隔
-  for (i in 1:nrow(tri_cell_pairs)) {
-    if(i %% progress_interval == 0) {
-      cat("  进度:", i, "/", nrow(tri_cell_pairs), 
-          paste0("(", round(i/nrow(tri_cell_pairs)*100, 1), "%)"), "\n")
-    }
-    ct1_ct2 = tri_cell_pairs$ct1_ct2[i]
-    ct2_ct3 = tri_cell_pairs$ct2_ct3[i]
-    mid = tri_cell_pairs$ct2[i]
-    lr1_score = double_celltype_interaction[double_lrpairs$lr1, ct1_ct2]
-    lr2_score = double_celltype_interaction[double_lrpairs$lr2, ct2_ct3]
-    mid_score = relay_matrix[double_lrpairs$RL, mid]
-    tri_cell_interaction[,i] = lr1_score * mid_score * lr2_score
-  }
-  
-  # 计算完成
-  end_time <- Sys.time()
-  cat("=== Finished! Time: ", round(as.numeric(end_time - start_time), 1), "seconds ===\n")
-  
-  return(list(
-    'triple_cell_pairs' = tri_cell_pairs,
-    'double_lrpais' = double_lrpairs,
-    'interaction_scores' = tri_cell_interaction
-  ))
-}
-
-
-
-#' Calculate multi cell cell single cell interactions
-#'
-#' @param Input Normalized expression data matrix
-#' 
-#' 
-#' @return A dataframe of Receptor-Ligand signal weights of each cell or celltypes
-#' @export 
-#' @examples
-#' utils::data("test_exp_data", package = "stMCCC")
-#' utils::data("test_anno", package = "stMCCC")
-#' results = Calculate_Combined_RL_weight(test_exp_data[,1,drop = F], 'SingleCell')
-#' results = Calculate_Combined_RL_weight(test_exp_data, test_anno$Label, 'CellType')
-calculate_single_ct_single_lrlr = function(Input, Coordinate, deconvolution_result, 
-                                           ct1, ct2, ct3, L1, R1, L2, R2, 
-                                           scRNA_mean_expression, relay_signal){
-  ct_pair = paste0(ct1,'-',ct2,'-',ct3)
-  lr_lr_pair = paste0(L1,'-',R1,'-',L2,'-',R2)
-  
-  relay_signal_score = relay_signal$combined_score[relay_signal$RL == paste0(R1,'-',L2) & relay_signal$cell_id == ct2]
-  ### 计算三种细胞类型下的所有可能的空间中spots组合
-  spots_celltype_matrix = Construct_spots_celltype(RCTD_result = deconvolution_result)
-  
-  Coordinate_matrix <- as.matrix(Coordinate[, c("x", "y")])
-  knn_result <- get.knn(Coordinate_matrix, k = 6)
-  neighbor_indices <- knn_result$nn.index
-  neighbor_names <- apply(neighbor_indices, 1, function(idx) {rownames(Coordinate)[idx]  })
-  knn_result_df <- data.frame(neighbors = t(neighbor_names))
-  rownames(knn_result_df) = rownames(Coordinate)
-  
-  knn_result_df = knn_result_df[apply(spots_celltype_matrix,1,function(x){ct2 %in% x}),]
-  knn_result_df = knn_result_df[apply(knn_result_df,1,function(x){ct1 %in% sapply(x, function(y){as.vector(spots_celltype_matrix[y,])})}),]
-  knn_result_df = knn_result_df[apply(knn_result_df,1,function(x){ct3 %in% sapply(x, function(y){as.vector(spots_celltype_matrix[y,])})}),]
-  knn_result_df = as.matrix(knn_result_df)
-  if (nrow(knn_result_df) == 0) {
-    return(NULL)
-  }
-  
-  senders = matrix(0, nrow = nrow(knn_result_df), ncol = ncol(knn_result_df), dimnames = list(rownames(knn_result_df), colnames(knn_result_df)))
-  receivers = matrix(0, nrow = nrow(knn_result_df), ncol = ncol(knn_result_df), dimnames = list(rownames(knn_result_df), colnames(knn_result_df)))
-  for (i in 1:nrow(senders)) {
-    for (k in 1:ncol(senders)) {
-      sp = knn_result_df[i,k]
-      if (ct1 %in% spots_celltype_matrix[sp,]) {
-        senders[i,k] = 1
-      }
-      if (ct3 %in% spots_celltype_matrix[sp,]) {
-        receivers[i,k] = 1
-      }
-    }
-  }
-  
-  all_spot_pair = list()
-  for (i in 1:nrow(knn_result_df)) {
-    spot1 = knn_result_df[i,][senders[i,] == 1]
-    spot2 = rownames(knn_result_df)[i]
-    spot3 = knn_result_df[i,][receivers[i,] == 1]
-    spot_pair = expand.grid(spot1, spot2, spot3, stringsAsFactors = F)
-    all_spot_pair[[i]] = as.data.table(spot_pair)
-  }
-  all_spot_pair = rbindlist(all_spot_pair)
-  colnames(all_spot_pair) = c('spot1','spot2','spot3')
-  
-  if (nrow(all_spot_pair) == 0) {
-    spot_interaction = data.frame()
-    spot_interaction$ct_pair = ct_pair
-    spot_interaction$lr_lr_pair = lr_lr_pair
-    return(spot_interaction)
-  }
-  
-  all_spot_pair$x1 = Coordinate$x[match(all_spot_pair$spot1,rownames(Coordinate))]
-  all_spot_pair$y1 = Coordinate$y[match(all_spot_pair$spot1,rownames(Coordinate))]
-  all_spot_pair$x2 = Coordinate$x[match(all_spot_pair$spot2,rownames(Coordinate))]
-  all_spot_pair$y2 = Coordinate$y[match(all_spot_pair$spot2,rownames(Coordinate))]
-  all_spot_pair$x3 = Coordinate$x[match(all_spot_pair$spot3,rownames(Coordinate))]
-  all_spot_pair$y3 = Coordinate$y[match(all_spot_pair$spot3,rownames(Coordinate))]
-  
-  deconvolution_reconsitution = Reconstruct_RCTD(deconvolution_result, spots_celltype_matrix)
-  all_celltype_expression_list = Get_reconstruct_ST_expression_ct_list(Input, scRNA_mean_expression, deconvolution_reconsitution)
-  
-  all_spot_pair$exp_L1 = all_celltype_expression_list[[ct1]][L1, all_spot_pair$spot1]
-  all_spot_pair$exp_R1 = all_celltype_expression_list[[ct2]][R1, all_spot_pair$spot2]
-  all_spot_pair$exp_L2 = all_celltype_expression_list[[ct2]][L2, all_spot_pair$spot2]
-  all_spot_pair$exp_R2 = all_celltype_expression_list[[ct3]][R2, all_spot_pair$spot3]
-  all_spot_pair$interaction_score = all_spot_pair$exp_L1 * all_spot_pair$exp_R1 * 10^4 * relay_signal_score *
-    all_spot_pair$exp_L2 * all_spot_pair$exp_R2 * 10^4
-  all_spot_pair$ct_pair = ct_pair
-  all_spot_pair$lr_lr_pair = lr_lr_pair
-  spot_interaction = all_spot_pair[all_spot_pair$interaction_score > 0,,drop = F]
-  return(spot_interaction)
-}
-
-
-
-
-#' Calculate multi cell cell interactions of all lr-lr pairs
-#'
-#' @param Input Normalized expression data matrix
-#' @param Coordinate Normalized expression data matrix
-#' @param st_type Normalized expression data matrix
-#' 
-#' 
-#' @return A dataframe of Receptor-Ligand signal weights of each cell or celltypes
-#' @export 
-#' @examples
-#' utils::data("test_exp_data", package = "stMCCC")
-#' utils::data("test_anno", package = "stMCCC")
-#' results = Calculate_Combined_RL_weight(test_exp_data[,1,drop = F], 'SingleCell')
-#' results = Calculate_Combined_RL_weight(test_exp_data, test_anno$Label, 'CellType')
-
-calculate_all_lrlr = function(Input, Coordinate, st_type = c('low', 'high'), deconvolution_result = NULL, scRNA_mean_expression = NULL,
-                              ct1, ct2, ct3, relay_signal, lrpairs = NULL, n_permutations = 1000) {
-  if(st_type == 'low' & (is.null(deconvolution_result) | is.null(scRNA_mean_expression))){
-    cat('Low resolution spatial transcriptome data requires deconvolution result and scRNA mean expression!')
-    break
-  }
-  
-  ct_pair = paste0(ct1,'-',ct2,'-',ct3)
-  
-  # 根据提供的lrpairs预先构建lr-lr组合
-  expressed_genes = rownames(Input)[rowSums(Input) > 0]
-  if(is.null(lrpairs)){
-    utils::data("SpaTalk_lrpairs", package = "stMCCC")
-    lrpairs <- SpaTalk_lrpairs[, c("ligand", "receptor")]
-    lrpairs$LR = paste0(lrpairs$ligand,'-',lrpairs$receptor)
-    lrpairs = lrpairs[lrpairs$ligand %in% expressed_genes & lrpairs$receptor %in% expressed_genes,]
-  }
-  
-  # double_lrpairs 构建
-  lrpairs_idx <- seq_len(nrow(lrpairs))
-  idx_grid <- expand.grid(lr1 = lrpairs_idx, lr2 = lrpairs_idx, stringsAsFactors = FALSE)
-  double_lrpairs <- data.frame(
-    lr1 = lrpairs$LR[idx_grid$lr1],
-    lr2 = lrpairs$LR[idx_grid$lr2],
-    ligand1 = lrpairs$ligand[idx_grid$lr1],
-    receptor1 = lrpairs$receptor[idx_grid$lr1],
-    ligand2 = lrpairs$ligand[idx_grid$lr2],
-    receptor2 = lrpairs$receptor[idx_grid$lr2]
-  )
-  double_lrpairs$RL = paste0(double_lrpairs$receptor1,'-',double_lrpairs$ligand2)
-  double_lrpairs = double_lrpairs[double_lrpairs$RL %in% relay_signal[relay_signal$cell_id == ct2,]$RL,]
-  double_lrpairs$LRLR = paste0(double_lrpairs$lr1,'-',double_lrpairs$lr2)
-  
-  
-  
-  if (st_type == 'low') {
-    spots_celltype_matrix = Construct_spots_celltype(RCTD_result = deconvolution_result)
-    
-    # 0. 计算每一个细胞类型在spots中的表达（仅低分辨率需要，同时也是低分辨率数据置换检验的必要步骤）
-    deconvolution_reconsitution = Reconstruct_RCTD(deconvolution_result, spots_celltype_matrix)
-    all_celltype_expression_list = Get_reconstruct_ST_expression_ct_list(Input, scRNA_mean_expression, deconvolution_reconsitution)
-    cat('=== Finished calculate the spatial expression of each cell type! \n')
-    
-    # 1. 计算所有spots的临近关系
-    Coordinate_matrix <- as.matrix(Coordinate[, c("x", "y")])
-    knn_result <- get.knn(Coordinate_matrix, k = 6)
-    neighbor_indices <- knn_result$nn.index
-    neighbor_names <- apply(neighbor_indices, 1, function(idx) {rownames(Coordinate)[idx]  })
-    knn_result_df <- data.frame(neighbors = t(neighbor_names))
-    rownames(knn_result_df) = rownames(Coordinate)
-    
-    # 2. 选出符合ct1-ct2-ct3要求的spots组合
-    knn_result_df = knn_result_df[apply(spots_celltype_matrix,1,function(x){ct2 %in% x}),]
-    knn_result_df = knn_result_df[apply(knn_result_df,1,function(x){ct1 %in% sapply(x, function(y){as.vector(spots_celltype_matrix[y,])})}),]
-    knn_result_df = knn_result_df[apply(knn_result_df,1,function(x){ct3 %in% sapply(x, function(y){as.vector(spots_celltype_matrix[y,])})}),]
-    knn_result_df = as.matrix(knn_result_df)
-    if (nrow(knn_result_df) == 0) {
-      return(NULL)
-    }
-    senders = matrix(0, nrow = nrow(knn_result_df), ncol = ncol(knn_result_df), dimnames = list(rownames(knn_result_df), colnames(knn_result_df)))
-    receivers = matrix(0, nrow = nrow(knn_result_df), ncol = ncol(knn_result_df), dimnames = list(rownames(knn_result_df), colnames(knn_result_df)))
-    for (i in 1:nrow(senders)) {
-      for (k in 1:ncol(senders)) {
-        sp = knn_result_df[i,k]
-        if (ct1 %in% spots_celltype_matrix[sp,]) {
-          senders[i,k] = 1
-        }
-        if (ct3 %in% spots_celltype_matrix[sp,]) {
-          receivers[i,k] = 1
-        }
-      }
-    }
-    all_spot_pair = list()
-    for (i in 1:nrow(knn_result_df)) {
-      spot1 = knn_result_df[i,][senders[i,] == 1]
-      spot2 = rownames(knn_result_df)[i]
-      spot3 = knn_result_df[i,][receivers[i,] == 1]
-      spot_pair = expand.grid(spot1, spot2, spot3, stringsAsFactors = F)
-      all_spot_pair[[i]] = as.data.table(spot_pair)
-    }
-    all_spot_pair = rbindlist(all_spot_pair)
-    colnames(all_spot_pair) = c('spot1','spot2','spot3')
-    if (nrow(all_spot_pair) == 0) {
-      spot_interaction = data.frame()
-      spot_interaction$ct_pair = ct_pair
-      spot_interaction$lr_lr_pair = 'null'
-      return(spot_interaction)
-    }
-    
-    # 3. 记录每个spot的坐标值
-    all_spot_pair$x1 = Coordinate$x[match(all_spot_pair$spot1,rownames(Coordinate))]
-    all_spot_pair$y1 = Coordinate$y[match(all_spot_pair$spot1,rownames(Coordinate))]
-    all_spot_pair$x2 = Coordinate$x[match(all_spot_pair$spot2,rownames(Coordinate))]
-    all_spot_pair$y2 = Coordinate$y[match(all_spot_pair$spot2,rownames(Coordinate))]
-    all_spot_pair$x3 = Coordinate$x[match(all_spot_pair$spot3,rownames(Coordinate))]
-    all_spot_pair$y3 = Coordinate$y[match(all_spot_pair$spot3,rownames(Coordinate))]
-    
-    cat('=== Start building permutation test 0 distribution data \n')
-    # 4. 构建置换检验的数据
-    spots_ct1 = rownames(spots_celltype_matrix)[apply(spots_celltype_matrix,1,function(x){ct1 %in% x})]
-    spots_ct2 = rownames(spots_celltype_matrix)[apply(spots_celltype_matrix,1,function(x){ct2 %in% x})]
-    spots_ct3 = rownames(spots_celltype_matrix)[apply(spots_celltype_matrix,1,function(x){ct3 %in% x})]
-    
-    spot_pair_permutation = data.frame('spot1' = sample(spots_ct1, n_permutations, replace = T),
-                                       'spot2' = sample(spots_ct2, n_permutations, replace = T),
-                                       'spot3' = sample(spots_ct3, n_permutations, replace = T))
-    
-    # 5. 计算所有lr-lr组合分数
-    cat('=== Start calculate all lr-lr score \n')
-    progress_interval = max(round(nrow(double_lrpairs)/10), 100)  # 进度汇报间隔
-    re = list()
-    for (g in 1:nrow(double_lrpairs)) {
-      if(g %% progress_interval == 0) {
-        cat("  Process:", g, "/", nrow(double_lrpairs), paste0("(", round(g/nrow(double_lrpairs)*100, 1), "%)"), "\n")
-      }
-      double_lrpairs_select = double_lrpairs[g,,drop = F]
-      L1 = double_lrpairs_select$ligand1
-      R1 = double_lrpairs_select$receptor1
-      L2 = double_lrpairs_select$ligand2
-      R2 = double_lrpairs_select$receptor2
-      lr_lr_pair = double_lrpairs_select$LRLR
-      exp_L1 = all_celltype_expression_list[[ct1]][L1, all_spot_pair$spot1]
-      exp_R1 = all_celltype_expression_list[[ct2]][R1, all_spot_pair$spot2]
-      exp_L2 = all_celltype_expression_list[[ct2]][L2, all_spot_pair$spot2]
-      exp_R2 = all_celltype_expression_list[[ct3]][R2, all_spot_pair$spot3]
-      if(sum(exp_L1) == 0 | sum(exp_R1) == 0 | sum(exp_L2) == 0 | sum(exp_R2) == 0){
-        re[[g]] = NULL
-        next
-      }
-      all_spot_pair_lrlr = all_spot_pair
-      all_spot_pair_lrlr$exp_L1 = exp_L1
-      all_spot_pair_lrlr$exp_R1 = exp_R1
-      all_spot_pair_lrlr$exp_L2 = exp_L2
-      all_spot_pair_lrlr$exp_R2 = exp_R2
-      
-      R1_L2_st_exp_mean = mean(all_celltype_expression_list[[ct2]][R1,]) * mean(all_celltype_expression_list[[ct2]][L2,])
-      relay_signal_score = relay_signal$combined_score[relay_signal$RL == paste0(R1,'-',L2) & relay_signal$cell_id == ct2]
-      if(R1_L2_st_exp_mean == 0){
-        re[[g]] = NULL
-        next
-      }
-      all_spot_pair_lrlr$relay_score = all_spot_pair_lrlr$exp_R1 * all_spot_pair_lrlr$exp_L2/R1_L2_st_exp_mean * relay_signal_score
-      all_spot_pair_lrlr$interaction_score = all_spot_pair_lrlr$exp_L1 * all_spot_pair_lrlr$exp_R1 * all_spot_pair_lrlr$relay_score *
-        all_spot_pair_lrlr$exp_L2 * all_spot_pair_lrlr$exp_R2
-      all_spot_pair_lrlr$ct_pair = ct_pair
-      all_spot_pair_lrlr$lr_lr_pair = lr_lr_pair
-      spot_interaction = all_spot_pair_lrlr[all_spot_pair_lrlr$interaction_score > 0,,drop = F]
-      
-      # 置换检验
-      permuted_scores <- numeric(n_permutations)
-      # 重新计算表达值
-      permuted_exp_L1 = all_celltype_expression_list[[ct1]][L1, spot_pair_permutation$spot1]
-      permuted_exp_R1 = all_celltype_expression_list[[ct2]][R1, spot_pair_permutation$spot2]
-      permuted_exp_L2 = all_celltype_expression_list[[ct2]][L2, spot_pair_permutation$spot2]
-      permuted_exp_R2 = all_celltype_expression_list[[ct3]][R2, spot_pair_permutation$spot3]
-      
-      if(sum(permuted_exp_L1) == 0 | sum(permuted_exp_R1) == 0 | sum(permuted_exp_L2) == 0 | sum(permuted_exp_R2) == 0){
-        permuted_scores <- numeric(n_permutations)
-      }
-      permuted_R1_L2_st_exp_mean = mean(all_celltype_expression_list[[ct2]][R1,]) * mean(all_celltype_expression_list[[ct2]][L2,])
-      if(permuted_R1_L2_st_exp_mean == 0){
-        permuted_scores <- numeric(n_permutations)
-        next
-      }
-      permuted_relay_score = permuted_exp_R1 * permuted_exp_L2 / permuted_R1_L2_st_exp_mean * relay_signal_score
-      permuted_interaction_score = permuted_exp_L1 * permuted_exp_R1 * permuted_relay_score *permuted_exp_L2 * permuted_exp_R2
-      permuted_scores <- permuted_interaction_score
-      
-      # 计算 p 值
-      ecdf_permuted_scores <- ecdf(permuted_scores) 
-      quantile_position <- ecdf_permuted_scores(spot_interaction$interaction_score)
-      p_value <- 1-quantile_position
-      spot_interaction$p_value <- p_value
-      re[[g]] = as.data.table(spot_interaction)
-    }
-    re = rbindlist(re)
-    return(re)
-    
-  }else if(st_type == 'high') {
-    
-  }
-}
-
 #' Calculate Triple Cell-Cell Interaction (CCI) with Customized Parameters
 #'
 #' This function calculates the triple cell-cell interaction scores based on the provided input data.
 #' It supports both parallel and sequential processing, and can handle different types of spatial transcriptomics data.
 #'
-#' @param Input A matrix or data frame containing gene expression data.
+#' @param Input A matrix containing gene expression data.(Recommend normalized data)
 #' @param Coordinate A data frame containing the spatial coordinates of spots, with columns "x" and "y".
 #' @param st_type A character string indicating the type of spatial transcriptomics data, either "low" or "high". Default is "low".
 #' @param relay_signal A data frame containing relay signal information.
@@ -1717,3 +837,7 @@ calculate_tri_cci_customized = function(Input,
   res = rbindlist(res, use.names = TRUE, fill = TRUE)
   return(res)
 }
+
+
+
+

@@ -9,19 +9,22 @@ validate_inputs(
   Coordinate,
   st_type,
   deconvolution_result = NULL,
-  scRNA_mean_expression = NULL
+  scRNA_mean_expression = NULL,
+  lr_db = NULL
 )
 }
 \arguments{
-\item{Input}{Normalized expression data matrix.}
+\item{Input}{A matrix or data frame containing gene expression data(Recommend normalized data).}
 
 \item{Coordinate}{Coordinate matrix.}
 
-\item{st_type}{Spatial transcriptome data type ('low' or 'high').}
+\item{st_type}{A character string indicating the type of spatial transcriptomics data, either "low" or "high". Default is "low".}
 
-\item{deconvolution_result}{Deconvolution result matrix.}
+\item{deconvolution_result}{A matrix or data frame containing deconvolution results. Required if st_type is "low".}
 
-\item{scRNA_mean_expression}{Mean expression matrix from scRNA-seq.}
+\item{scRNA_mean_expression}{A matrix or data frame containing single-cell RNA-seq mean expression data. Required if st_type is "low".}
+
+\item{lr_db}{A data frame containing ligand-receptor pairs.}
 }
 \value{
 TRUE if all inputs are valid, otherwise stop with an error message.
