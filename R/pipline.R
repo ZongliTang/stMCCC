@@ -1,3 +1,4 @@
+#### 7.21
 #' Validate input data for calculate_all_lrlr function.
 #'
 #' @param Input A matrix or data frame containing gene expression data(Recommend normalized data).
